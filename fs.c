@@ -33,8 +33,37 @@ union fs_block {
 	char data[DISK_BLOCK_SIZE];
 };
 
+/* Free block bitmap */
+/* Index by block number, 1 - used, 0 - free */
+int *bitmap = NULL;
+
 int fs_format() {
-	return 0;
+	/* Return failure if attempting to format an already mounted disk */
+	if (bitmap != NULL) {
+		return 0;
+	}
+	
+	/* Destroy any data already present */
+	int nblocks = disk_size();
+	char *buffer = (char*)calloc(4096, sizeof(char));
+	for (size_t i = 0; i < nblocks; i++) {
+		disk_write(i, buffer);
+	}
+	free(buffer);
+	
+	/* Calculate # of blocks to be allocated for inodes and total # of inodes */
+	int ninodeblocks = (nblocks + (10 - 1)) / 10;
+	int ninodes = ninodeblocks * INODES_PER_BLOCK;
+	
+	/* Write the superblock */
+	union fs_block block;
+	block.super.magic = FS_MAGIC;
+	block.super.nblocks = nblocks;
+	block.super.ninodeblocks = ninodeblocks;
+	block.super.ninodes = ninodes;
+	disk_write(0, block.data);
+
+	return 1;
 }
 
 void fs_debug() {
@@ -66,22 +95,31 @@ void fs_debug() {
 				printf("    size %d bytes\n", inode.size);
 
 				/* Iterate over direct blocks for inode */
-				printf("    direct blocks: ");
-				for (int i = 0; i < POINTERS_PER_INODE; i++) {
-					if (inode.direct[i]) {
-						printf("%d ", inode.direct[i]);
+				int any_dblocks = 0;
+				for (int k = 0; k < POINTERS_PER_INODE; k++) {
+					if (inode.direct[k]) {
+						any_dblocks = 1;
+						break;
 					}
 				}
-				printf("\n");
+				if (any_dblocks) {
+					printf("    direct blocks: ");
+					for (int k = 0; k < POINTERS_PER_INODE; k++) {
+						if (inode.direct[k]) {
+							printf("%d ", inode.direct[k]);
+						}
+					}
+					printf("\n");
+				}
 
 				/* Iterate over indirect data blocks for inode */
 				if (inode.indirect) {
 					printf("    indirect block: %d\n", inode.indirect);
 					disk_read(inode.indirect, block.data);
 					printf("    indirect data blocks: ");
-					for (int i = 0; i < POINTERS_PER_BLOCK; i++) {
-						if (block.pointers[i]) {
-							printf("%d ", block.pointers[i]);
+					for (int k = 0; k < POINTERS_PER_BLOCK; k++) {
+						if (block.pointers[k]) {
+							printf("%d ", block.pointers[k]);
 						}
 					}
 					printf("\n");
@@ -92,33 +130,64 @@ void fs_debug() {
 }
 
 int fs_mount() {
+	/* Examine the disk for a filesystem */
+	union fs_block block;
+	disk_read(0, block.data);
+
+	/* If there is a filesystem on disk, create the bitmap */
+	if (block.super.magic == FS_MAGIC) {
+		bitmap = (int*)calloc(block.super.nblocks, sizeof(int));
+
+		/* Mark the superblock and inode blocks as used */
+		for (int i = 0; i < block.super.ninodeblocks + 1; i++) {
+			bitmap[i] = 1;
+		}
+
+		/* Scan through all of the inodes to populate the bitmap */
+		for (int i = 0; i < block.super.ninodeblocks; i++) {
+			disk_read(i + 1, block.data);
+			for (int j = 0; j < INODES_PER_BLOCK; j++) {
+				struct fs_inode inode = block.inode[j];
+				if (inode.isvalid) {
+					/* Scan through direct blocks */
+					for (int k = 0; k < POINTERS_PER_INODE; k++) {
+						if (inode.direct[k]) {
+							bitmap[inode.direct[k]] = 1;
+						}
+					}
+
+					/* Scan through indirect blocks */
+					if (inode.indirect) {
+						disk_read(inode.indirect, block.data);
+						for (int k = 0; k < POINTERS_PER_BLOCK; k++) {
+							if (block.pointers[k]) {
+								bitmap[block.pointers[k]] = 1;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		/* USE TO DEBUG */
+		/* 
+		printf("USED BLOCKS\n");
+		for (int i = 0; i < disk_size(); i++) {
+			if (bitmap[i]) {
+				printf("%d ", i);
+			}
+		}
+		printf("\n");
+		*/
+
+		return 1;
+	}
+
+	/* No file system is present on disk */
 	return 0;
 }
 
 int fs_create() {
-	/* Create new inode of zero length */
-	union fs_block block;
-	disk_read(0, block.data);
-
-	for (int i = 0; i < block.super.ninodeblocks; i++) {
-		disk_read(i + 1, block.data);
-		for (int j = 0; i < INODES_PER_BLOCK; j++) {
-			int inode_no = 128 * i + j;
-			if (inode_no == 0) {
-				continue;
-			}
-			struct fs_inode inode = block.inode[j];
-			
-			/* Found free inode */
-			if (!inode.isvalid) {
-				/* Mark inode as valid and write changes to disk */
-				inode.isvalid = 1;
-				block.inode[j] = inode;
-				disk_write(i + 1, block.data);
-				return inode_no;
-			}
-		}
-	}
 	return 0;
 }
 
