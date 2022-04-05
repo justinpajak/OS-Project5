@@ -96,6 +96,29 @@ int fs_mount() {
 }
 
 int fs_create() {
+	/* Create new inode of zero length */
+	union fs_block block;
+	disk_read(0, block.data);
+
+	for (int i = 0; i < block.super.ninodeblocks; i++) {
+		disk_read(i + 1, block.data);
+		for (int j = 0; i < INODES_PER_BLOCK; j++) {
+			int inode_no = 128 * i + j;
+			if (inode_no == 0) {
+				continue;
+			}
+			struct fs_inode inode = block.inode[j];
+			
+			/* Found free inode */
+			if (!inode.isvalid) {
+				/* Mark inode as valid and write changes to disk */
+				inode.isvalid = 1;
+				block.inode[j] = inode;
+				disk_write(i + 1, block.data);
+				return inode_no;
+			}
+		}
+	}
 	return 0;
 }
 
