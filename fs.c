@@ -188,11 +188,96 @@ int fs_mount() {
 }
 
 int fs_create() {
+	//create an inode of zero length
+	union fs_block block;
+	
+	//iterate over the inodes in the disk
+	disk_read(0, block.data);
+	for (int i = 0; i < block.super.ninodeblocks; i++){
+		//get the inode block
+		disk_read(i + 1, block.data);
+		//iterate over the inodes in the inode block and find first invalid inode
+		for (int j = 1; j < INODES_PER_BLOCK+1; j++){
+			struct fs_inode inode = block.inode[j];
+			if(!inode.isvalid){
+				//create the new inode struct
+				struct fs_inode new_inode;
+				//set all values to 0
+				new_inode.isvalid = 1;
+				new_inode.size = 0;
+				new_inode.indirect = 0;
+				//calculate the inode number
+				int inode_no = 128 * i + j;
+				//set the new inode in the blocks inodes
+				block.inode[j] = new_inode;
+				//write back to disk
+				disk_write(i+1, block.data);
+				return inode_no;
+			}
+		}
+	}
+	//return positive inode number on success and 0 on failure
 	return 0;
 }
 
 int fs_delete( int inumber ) {
-	return 0;
+	//create an inode of zero length
+	union fs_block block;
+	//read in the superblock
+	disk_read(0, block.data);
+	int block_no = ((inumber/128) * 128)+1;
+	// check to see if the inode number is in range
+	if(block_no > block.super.ninodeblocks || block_no < 1){
+		printf("BAD BLOCK #\n");
+		return 0;
+	}
+	// read in the data block
+	disk_read(block_no, block.data);
+
+	//get the relative inumber in the block
+	int rel_inum = inumber % 128;
+	struct fs_inode del_inode = block.inode[rel_inum];
+	//check if it is a valid inode
+	if(!del_inode.isvalid){
+		printf("INODE NOT VALID\n");
+		return 0;
+	}
+	for (int k = 0; k < POINTERS_PER_INODE; k++){
+		if (del_inode.direct[k]) {
+			// get the data block
+			disk_read(del_inode.direct[k], block.data);
+			// create blank data for the block
+			char blank_data[DISK_BLOCK_SIZE];
+			// have the data block point to the blank data
+			*block.data = *blank_data;
+			// set the bitmap at that location to 0
+			bitmap[del_inode.direct[k]] = 0;
+		} else if (del_inode.indirect) {
+			// get the indirect block
+			disk_read(del_inode.indirect, block.data);
+			for (int j = 0; j < POINTERS_PER_BLOCK; j++) {
+				if (block.pointers[j]) {
+					// get the block from the pointer
+					union fs_block data_block;
+					disk_read(block.pointers[j], data_block.data);
+					// create blank data for it to point to
+					char blank_data[DISK_BLOCK_SIZE];
+					*data_block.data = *blank_data;
+					// set the bitmap at this location to 0
+					bitmap[block.pointers[j]] = 0;
+				}
+			}
+		}
+	}
+
+	// set the inode to invalid
+	disk_read(block_no, block.data);
+	// set the valid bit to 0
+	del_inode.isvalid = 0;
+	block.inode[rel_inum] = del_inode;
+	disk_write(block_no, block.data);
+
+	return 1;
 }
 
 int fs_getsize( int inumber ) {
