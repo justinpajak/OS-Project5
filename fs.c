@@ -269,19 +269,36 @@ int fs_delete( int inumber ) {
 			}
 		}
 	}
-
 	// set the inode to invalid
 	disk_read(block_no, block.data);
 	// set the valid bit to 0
 	del_inode.isvalid = 0;
 	block.inode[rel_inum] = del_inode;
 	disk_write(block_no, block.data);
+	
 
 	return 1;
 }
 
 int fs_getsize( int inumber ) {
-	return -1;
+	//create an inode of zero length
+	union fs_block block;
+	//read in the superblock
+	disk_read(0, block.data);
+	int block_no = ((inumber/128) * 128)+1;	
+	// check if the block number is valid
+	if(block_no > block.super.ninodeblocks || block_no < 1){
+		return -1;
+	}
+	// get the offset relative to the block
+	disk_read(block_no, block.data);
+	int rel_inum = inumber % 128;
+	struct fs_inode my_inode = block.inode[rel_inum];
+	// check if it is a valid inode
+	if(!my_inode.isvalid){
+		return -1;
+	}
+	return my_inode.size;
 }
 
 int fs_read( int inumber, char *data, int length, int offset ) {
