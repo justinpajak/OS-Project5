@@ -33,6 +33,8 @@ union fs_block {
 	char data[DISK_BLOCK_SIZE];
 };
 
+void inode_load(int inumber, struct fs_inode *inode);
+
 /* Free block bitmap */
 /* Index by block number, 1 - used, 0 - free */
 int *bitmap = NULL;
@@ -230,7 +232,7 @@ int fs_delete( int inumber ) {
 	disk_read(0, block.data);
 	int block_no = ((inumber/128) * 128)+1;
 	// check to see if the inode number is in range
-	if(block_no > block.super.ninodeblocks || block_no < 1){
+	if (block_no > block.super.ninodeblocks || block_no < 1){
 		printf("BAD BLOCK #\n");
 		return 0;
 	}
@@ -310,5 +312,139 @@ int fs_read( int inumber, char *data, int length, int offset ) {
 }
 
 int fs_write( int inumber, const char *data, int length, int offset ) {
-	return 0;
+	//create an inode of zero length
+	union fs_block block;
+	//read in the superblock
+	disk_read(0, block.data);
+	int block_no = ((inumber/128) * 128)+1;	
+	// check if the block number is valid
+	if(block_no > block.super.ninodeblocks || block_no < 1){
+		return -1;
+	}
+	// get the offset relative to the block
+	disk_read(block_no, block.data);
+	int rel_inum = inumber % 128;
+	struct fs_inode inode = block.inode[rel_inum];
+	// check if it is a valid inode
+	if(!inode.isvalid){
+		return 0;
+	}
+
+    union fs_block superblock;
+	// read in the superblock
+	disk_read(0, superblock.data);
+    int ninodeblocks = superblock.super.ninodeblocks;
+    int nblocks = superblock.super.nblocks;
+
+    // Counter for amount of data written
+    int written = 0;
+
+    // Keep track of direct pointer
+    int direct = offset / DISK_BLOCK_SIZE;
+    int inner_offset = offset - (direct * DISK_BLOCK_SIZE);
+
+    // While there is still data to write
+    while (written < length) {
+        // Starting data block to look at
+        int num = ninodeblocks + 1;
+
+        // Initialize a data block
+        union fs_block data_block;
+
+
+        // If there is data block at the offset specified
+        if (direct < POINTERS_PER_INODE && inode.direct[direct]) {
+            disk_read(inode.direct[direct], data_block.data);
+            // Continue writing data until reaching the end of the block or writing the requested amount of data
+            for (int i = inner_offset; i < DISK_BLOCK_SIZE && written < length; i++) {
+                data_block.data[i] = data[written];
+                written++;
+            }
+            direct++;
+            inner_offset = 0;
+
+            // Write block to disk
+            disk_write(inode.direct[direct], data_block.data);
+        }
+        else {
+            // Searching for an open data block
+            while (bitmap[num] != 0 && num < nblocks) {
+                num++;
+            }
+            // If there are no more data blocks return the amount written
+            if (num >= nblocks) {
+                break;
+            }
+            if (direct < POINTERS_PER_INODE) {
+                inode.direct[direct] = num;
+            }
+            else {
+                int indirect = direct - POINTERS_PER_INODE;
+                if (indirect > POINTERS_PER_BLOCK) {
+                    // No more room for indirect pointers
+                    break;
+                }
+                union fs_block indirect_block;
+                // Get indirect pointer if the inode already has one
+                if (inode.indirect != 0) {
+                    disk_read(inode.indirect, indirect_block.data);
+                }
+                // Allocate space for a new indirect pointer otherwise
+                else {
+                    char blank_data[DISK_BLOCK_SIZE];
+                    *indirect_block.data = *blank_data;
+                    inode.indirect = num;
+
+                    // Searching for an open data block because the other block was used for the indirect block
+                    while (bitmap[num] != 0 && num < nblocks) {
+                        num++;
+                    }
+                    // If there are no more data blocks return the amount written
+                    if (num >= nblocks) {
+                        break;
+                    }
+                }
+                if (indirect_block.pointers[indirect]) {
+                    disk_read(indirect_block.pointers[indirect], data_block.data);
+                    num = indirect_block.pointers[indirect];
+                }
+                else {
+                    char blank_data[DISK_BLOCK_SIZE];
+                    *data_block.data = *blank_data;
+                }
+            }
+
+            // Write data to the block
+            for (int i = inner_offset; i < DISK_BLOCK_SIZE && written < length; i++) {
+                data_block.data[i] = data[written];
+                written++;
+            }
+            inner_offset = 0;
+            direct++;
+            bitmap[num] = 1;
+            disk_write(num, data_block.data);
+        }
+    }
+    inode.size += written;
+    block.inode[rel_inum] = inode;
+    disk_write(block_no, block.data);
+	return written;
+}
+
+void inode_load(int inumber, struct fs_inode *inode) {
+	// create an inode of zero length
+	union fs_block block;
+	// read in the superblock
+	disk_read(0, block.data);
+	int block_no = ((inumber/128) * 128)+1;	
+	// check if the block number is valid
+	if(block_no > block.super.ninodeblocks || block_no < 1){
+		return;
+	}
+	// get the offset relative to the block
+	disk_read(block_no, block.data);
+	int rel_inum = inumber % 128;
+	struct fs_inode my_inode = block.inode[rel_inum];
+
+    inode = &my_inode;
 }
