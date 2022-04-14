@@ -83,13 +83,16 @@ void fs_debug() {
 	printf("    %d inodes total\n",block.super.ninodes);
 
 	/* Iterate through each block containing inodes */
-	for (int i = 0; i < block.super.ninodeblocks; i++) {
+	int ninodeblocks = block.super.ninodeblocks;
+	for (int i = 0; i < ninodeblocks; i++) {
 		disk_read(i + 1, block.data);
 
 		/* Iterate through each inode in block */
 		for (int j = 0; j < INODES_PER_BLOCK; j++) {
+			disk_read(i+1, block.data);
 			int inode_no = 128 * i + j;
 			struct fs_inode inode = block.inode[j];
+			//printf("%d\n", inode_no);
 			if (inode.isvalid) {
 				printf("inode %d:\n", inode_no);
 				printf("    size %d bytes\n", inode.size);
@@ -302,6 +305,7 @@ int fs_getsize( int inumber ) {
 }
 
 int fs_read( int inumber, char *data, int length, int offset ) {
+	// check if the inumber is valid
 	return 0;
 }
 
